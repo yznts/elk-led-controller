@@ -2,9 +2,6 @@
 
 A Rust library for controlling ELK-BLEDOM and similar Bluetooth LED strips. Works with multiple device types including ELK-BLE, LEDBLE, MELK, ELK-BULB, and ELK-LAMPL.
 
-[![Crates.io](https://img.shields.io/crates/v/elk_ble_led_controller)](https://crates.io/crates/elk_ble_led_controller)
-[![Documentation](https://docs.rs/elk_ble_led_controller/badge.svg)](https://docs.rs/elk_ble_led_controller)
-
 ## Features
 
 * Power on/off control
@@ -236,20 +233,20 @@ use elk_led_controller::*;
 async fn main() -> Result<(), Error> {
     // Initialize device
     let mut device = BleLedDevice::new().await?;
-    
+
     // Create an audio monitor
     let audio_monitor = AudioMonitor::new()?;
-    
+
     // Configure audio visualization
     let mut config = audio_monitor.get_config();
     config.mode = VisualizationMode::FrequencyColor; // Map frequencies to RGB
     config.sensitivity = 0.7; // 70% sensitivity
     audio_monitor.set_config(config);
-    
+
     // Start continuous audio monitoring with LED control
     // (This will run until the program is interrupted)
     audio_monitor.start_continuous_monitoring(&mut device).await?;
-    
+
     Ok(())
 }
 ```

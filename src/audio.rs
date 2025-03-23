@@ -293,7 +293,7 @@ impl AudioAnalyzer {
                                 let new_bpm = (beats as f32 * 60.0) / time_span as f32;
 
                                 // Smooth BPM changes (weighted average)
-                                if new_bpm >= 60.0 && new_bpm <= 200.0 {
+                                if (60.0..=200.0).contains(&new_bpm) {
                                     self.estimated_bpm = self.estimated_bpm * 0.7 + new_bpm * 0.3;
                                 }
                             }
@@ -401,6 +401,7 @@ pub struct AudioMonitor {
     /// Current visualization configuration
     config: Arc<RwLock<AudioVisualization>>,
     /// Channel for sending samples to analyzer
+    #[allow(dead_code)]
     sample_tx: Option<mpsc::Sender<f32>>,
     /// Channel for receiving calculated colors
     color_rx: watch::Receiver<AudioColor>,
@@ -1045,17 +1046,99 @@ impl AudioMonitor {
         self.config.write().active = active;
     }
 
-    /// Apply current audio visualization to the LED device
+    // Update the apply_to_device method in AudioMonitor to include more detailed logging
     #[instrument(skip(self, device))]
     pub async fn apply_to_device(&self, device: &mut BleLedDevice) -> Result<()> {
         // Get the latest color from the analyzer
         let audio_color = *self.color_rx.borrow();
 
-        // Only apply if there's a significant change in color
-        debug!(
-            "Applying audio visualization - RGB({}, {}, {}), Brightness: {}, Effect: {:?}",
-            audio_color.r, audio_color.g, audio_color.b, audio_color.brightness, audio_color.effect
-        );
+        // Get current config for context
+        let config = self.config.read();
+
+        // Create detailed log entry with audio characteristics
+        let log_entry = match config.mode {
+            VisualizationMode::FrequencyColor => {
+                info!(
+                    "Audio viz [FrequencyColor] - RGB({}, {}, {}) - Bass: {:.2}, Mid: {:.2}, High: {:.2}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    self.get_energy(FrequencyRange::Bass),
+                    self.get_energy(FrequencyRange::Mid),
+                    self.get_energy(FrequencyRange::High),
+                    audio_color.brightness
+                );
+            }
+            VisualizationMode::EnergyBrightness => {
+                info!(
+                    "Audio viz [EnergyBrightness] - RGB({}, {}, {}) - Overall Energy: {:.2}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    self.get_energy(FrequencyRange::Full),
+                    audio_color.brightness
+                );
+            }
+            VisualizationMode::BeatEffects => {
+                let beat_info = if audio_color.effect.is_some() {
+                    "Beat detected"
+                } else {
+                    "No beat"
+                };
+
+                info!(
+                    "Audio viz [BeatEffects] - RGB({}, {}, {}) - {}, Effect: {:?}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    beat_info,
+                    audio_color.effect.map(|e| format!("{}", e)),
+                    audio_color.brightness
+                );
+            }
+            VisualizationMode::SpectralFlow => {
+                info!(
+                    "Audio viz [SpectralFlow] - RGB({}, {}, {}) - Energy: {:.2}, Effect: {:?}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    self.get_energy(FrequencyRange::Full),
+                    audio_color.effect.map(|e| format!("{}", e)),
+                    audio_color.brightness
+                );
+            }
+            VisualizationMode::EnhancedFrequencyColor => {
+                info!(
+                    "Audio viz [EnhancedFrequencyColor] - RGB({}, {}, {}) - Bass: {:.2}, Mid: {:.2}, High: {:.2}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    self.get_energy(FrequencyRange::Bass),
+                    self.get_energy(FrequencyRange::Mid),
+                    self.get_energy(FrequencyRange::High),
+                    audio_color.brightness
+                );
+            }
+            VisualizationMode::BpmSync => {
+                let bpm = self.get_estimated_bpm();
+                let beat_info = if audio_color.effect.is_some() {
+                    "On beat"
+                } else {
+                    "Off beat"
+                };
+
+                info!(
+                    "Audio viz [BpmSync] - RGB({}, {}, {}) - BPM: {:.1}, {}, Effect: {:?}, Brightness: {}%",
+                    audio_color.r,
+                    audio_color.g,
+                    audio_color.b,
+                    bpm,
+                    beat_info,
+                    audio_color.effect.map(|e| format!("{}", e)),
+                    audio_color.brightness
+                );
+            }
+        };
 
         // Ensure device is powered on
         if !device.is_on {
@@ -1079,7 +1162,35 @@ impl AudioMonitor {
         Ok(())
     }
 
-    /// Start continuous audio monitoring and apply to the LED device
+    // Add a new method to periodically log detailed audio analysis information
+    // This can be called from a separate task to avoid flooding the main log
+    pub async fn log_detailed_analysis(&self) -> Result<()> {
+        // Get current analytics
+        let energy_bass = self.get_energy(FrequencyRange::Bass);
+        let energy_mid = self.get_energy(FrequencyRange::Mid);
+        let energy_high = self.get_energy(FrequencyRange::High);
+        let energy_full = self.get_energy(FrequencyRange::Full);
+        let bpm = self.get_estimated_bpm();
+
+        // Get current config
+        let config = self.config.read();
+
+        debug!(
+            "Audio Analysis: Mode={:?}, Active={}, Sensitivity={:.2}, Bass={:.3}, Mid={:.3}, High={:.3}, Overall={:.3}, BPM={:.1}",
+            config.mode,
+            config.active,
+            config.sensitivity,
+            energy_bass,
+            energy_mid,
+            energy_high,
+            energy_full,
+            bpm
+        );
+
+        Ok(())
+    }
+
+    // Add periodic detailed logging to the continuous monitoring loop
     #[instrument(skip(self, device))]
     pub async fn start_continuous_monitoring(&self, device: &mut BleLedDevice) -> Result<()> {
         info!("Starting continuous audio monitoring");
@@ -1095,8 +1206,19 @@ impl AudioMonitor {
         // Apply visualization at regular intervals until stopped
         let update_interval = Duration::from_millis(self.config.read().update_interval_ms as u64);
 
+        // Counter for periodic detailed logging (log details every 50 updates)
+        let mut log_counter = 0;
+
         while self.config.read().active && !self.stop_flag.load(Ordering::Relaxed) {
             self.apply_to_device(device).await?;
+
+            // Perform detailed logging periodically
+            log_counter += 1;
+            if log_counter >= 50 {
+                self.log_detailed_analysis().await?;
+                log_counter = 0;
+            }
+
             sleep(update_interval).await;
         }
 

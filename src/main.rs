@@ -129,8 +129,6 @@ enum Commands {
     Blue,
     /// Set to white color
     White,
-    /// Set to rainbow crossfade effect
-    Rainbow,
     /// Set brightness
     Brightness {
         /// Brightness level (0-100)
@@ -252,6 +250,7 @@ async fn main() -> Result<()> {
         }
         Commands::Off => {
             device.power_off().await?;
+            info!("sexo");
         }
         Commands::Red => {
             // First ensure device is on, then set color
@@ -269,12 +268,6 @@ async fn main() -> Result<()> {
         Commands::White => {
             device.power_on().await?;
             device.set_color(255, 255, 255).await?;
-        }
-        Commands::Rainbow => {
-            device.power_on().await?;
-            device
-                .set_effect(EFFECTS.crossfade_red_green_blue_yellow_cyan_magenta_white)
-                .await?;
         }
         Commands::Brightness { level } => {
             // We need to ensure the device is on for brightness changes to be visible
@@ -451,7 +444,7 @@ async fn run_audio_visualization(
                 AudioModeType::BpmSync => {
                     let bpm = audio_monitor.get_estimated_bpm();
                     format!(" | BPM Mode: {:.1} BPM", bpm)
-                },
+                }
                 _ => String::new(),
             };
 

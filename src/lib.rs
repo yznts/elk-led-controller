@@ -1,5 +1,5 @@
 /*!
- # ELK-BLEDOM Bluetooth LED Strip Controller Library
+ # elk-led-controller library
 
  A Rust library for controlling ELK-BLEDOM and similar Bluetooth LED strips.
  Supports multiple device types including ELK-BLE, LEDBLE, MELK, ELK-BULB, and ELK-LAMPL.
@@ -81,11 +81,11 @@ pub enum Error {
     /// Audio capture error
     #[error("Audio capture error: {0}")]
     AudioCaptureError(String),
-    
+
     /// CPAL Stream build error
     #[error("Audio stream build error: {0}")]
     StreamBuildError(String),
-    
+
     /// CPAL Stream play error
     #[error("Audio stream play error: {0}")]
     StreamPlayError(String),
@@ -99,11 +99,11 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 // Re-export modules
+pub mod audio;
 pub mod device;
 pub mod effects;
 pub mod schedule;
-pub mod audio;
 
 // Re-export key types
-pub use device::{BleLedDevice, Days, DeviceConfig, DeviceType, Effects, EFFECTS, WEEK_DAYS};
 pub use audio::{AudioMonitor, AudioVisualization, FrequencyRange, VisualizationMode};
+pub use device::{BleLedDevice, Days, DeviceConfig, DeviceType, Effects, EFFECTS, WEEK_DAYS};

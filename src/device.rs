@@ -3,7 +3,9 @@ use btleplug::api::{
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use chrono::{self, Datelike, Timelike};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time;
 use tracing::{debug, error, info, instrument, trace, warn};
 use uuid::Uuid;
@@ -62,6 +64,54 @@ pub struct DeviceConfig {
     pub min_color_temp_k: u32,
     /// Maximum supported color temperature in Kelvin
     pub max_color_temp_k: u32,
+    /// Command processing time in milliseconds
+    pub command_delay: u64,
+}
+
+/// Command queue to manage Bluetooth commands with rate limiting
+struct CommandQueue {
+    /// Semaphore to limit command concurrency
+    semaphore: Semaphore,
+    /// Minimum delay between commands
+    min_delay: Duration,
+    /// Last command timestamp
+    last_command: Mutex<std::time::Instant>,
+}
+
+impl CommandQueue {
+    fn new(min_delay_ms: u64) -> Self {
+        Self {
+            semaphore: Semaphore::new(1), // Only allow one command at a time
+            min_delay: Duration::from_millis(min_delay_ms),
+            last_command: Mutex::new(std::time::Instant::now() - Duration::from_secs(1)),
+        }
+    }
+
+    async fn execute<T, F>(&self, future: F) -> T
+    where
+        F: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        // Acquire permit to ensure only one command executes at a time
+        let _permit = self.semaphore.acquire().await.unwrap();
+
+        // Check if we need to wait before executing
+        let mut last_cmd = self.last_command.lock().await;
+        let elapsed = last_cmd.elapsed();
+        if elapsed < self.min_delay {
+            let wait_time = self.min_delay - elapsed;
+            trace!("Rate limiting: waiting {:?} before next command", wait_time);
+            tokio::time::sleep(wait_time).await;
+        }
+
+        // Execute the command
+        let result = future.await;
+
+        // Update last command time
+        *last_cmd = std::time::Instant::now();
+
+        result
+    }
 }
 
 /// Main struct for controlling an LED strip via Bluetooth LE
@@ -79,6 +129,8 @@ pub struct BleLedDevice {
     device_type: DeviceType,
     /// Device-specific configuration
     config: DeviceConfig,
+    /// Command queue for rate limiting
+    command_queue: Arc<CommandQueue>,
     /// Current power state
     pub is_on: bool,
     /// Current RGB color (red, green, blue)
@@ -212,6 +264,9 @@ impl BleLedDevice {
             let config = Self::get_device_config(device_type);
             debug!("Using config for device type: {:?}", device_type);
 
+            // Create command queue with device-specific delay
+            let command_queue = Arc::new(CommandQueue::new(config.command_delay));
+
             // Find write characteristic
             let write_char = peripheral
                 .characteristics()
@@ -239,6 +294,7 @@ impl BleLedDevice {
                 read_characteristic: read_char,
                 device_type,
                 config,
+                command_queue,
                 is_on: false,
                 rgb_color: (255, 255, 255),
                 brightness: 100,
@@ -277,6 +333,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
+                command_delay: 200, // 200 seems to be the lowest value supported
             },
             DeviceType::LedBle => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000ffe1-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -285,6 +342,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
+                command_delay: 200,
             },
             DeviceType::Melk => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000fff3-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -293,6 +351,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
+                command_delay: 200,
             },
             DeviceType::ElkBulb | DeviceType::ElkLampl | DeviceType::Unknown => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000fff3-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -301,6 +360,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
+                command_delay: 200,
             },
         }
     }
@@ -342,8 +402,6 @@ impl BleLedDevice {
         ])
         .await?;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         debug!("Time synchronization complete");
         Ok(())
     }
@@ -387,8 +445,6 @@ impl BleLedDevice {
         ])
         .await?;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         debug!("Custom time set successfully");
         Ok(())
     }
@@ -400,8 +456,6 @@ impl BleLedDevice {
         self.send_command(&self.config.turn_on_cmd).await?;
         self.is_on = true;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("LED strip powered on");
         Ok(())
     }
@@ -413,8 +467,6 @@ impl BleLedDevice {
         self.send_command(&self.config.turn_off_cmd).await?;
         self.is_on = false;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("LED strip powered off");
         Ok(())
     }
@@ -444,7 +496,6 @@ impl BleLedDevice {
             // Send a pre-command to disable effects mode
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
 
         // Now set the RGB color
@@ -466,8 +517,6 @@ impl BleLedDevice {
         self.rgb_color = (red_value, green_value, blue_value);
         self.effect = None; // Setting a static color disables any active effect
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!(
             "Color set to RGB({}, {}, {})",
             red_value, green_value, blue_value
@@ -506,8 +555,6 @@ impl BleLedDevice {
 
         self.brightness = limited_value;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Brightness set to {}%", limited_value);
         Ok(())
     }
@@ -527,8 +574,6 @@ impl BleLedDevice {
 
         self.effect = Some(value);
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Effect mode set successfully");
         Ok(())
     }
@@ -569,8 +614,6 @@ impl BleLedDevice {
 
         self.effect_speed = Some(limited_value);
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Effect speed set to {}", limited_value);
         Ok(())
     }
@@ -611,7 +654,6 @@ impl BleLedDevice {
             // Send a pre-command to disable effects mode
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
 
         // Now set the color temperature
@@ -626,8 +668,6 @@ impl BleLedDevice {
         self.color_temp_kelvin = Some(temp);
         self.effect = None; // Setting color temp disables any active effect
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Color temperature set to {}K", temp);
         Ok(())
     }
@@ -660,8 +700,6 @@ impl BleLedDevice {
         self.send_command(&[0x7e, 0x00, 0x82, hours, minutes, 0x00, 0x00, value, 0xef])
             .await?;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Schedule set to turn on at {}:{:02}", hours, minutes);
         Ok(())
     }
@@ -694,8 +732,6 @@ impl BleLedDevice {
         self.send_command(&[0x7e, 0x00, 0x82, hours, minutes, 0x00, 0x01, value, 0xef])
             .await?;
 
-        // Add a small delay to ensure the command has been processed
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         info!("Schedule set to turn off at {}:{:02}", hours, minutes);
         Ok(())
     }
@@ -729,55 +765,70 @@ impl BleLedDevice {
         Ok(())
     }
 
-    /// Helper function to ensure commands are sent reliably
+    /// Helper function to ensure commands are sent reliably with rate limiting
     #[instrument(skip(self, command), fields(cmd_length = command.len()))]
     async fn send_command(&self, command: &[u8]) -> Result<()> {
-        // BLE can be unreliable, so we implement retries
-        let max_retries = 3;
-        let mut attempt = 0;
+        // Create a clone of the command for the async block
+        let cmd = command.to_vec();
+        let peripheral = self.peripheral.clone();
+        let write_characteristic = self.write_characteristic.clone();
 
-        while attempt < max_retries {
-            trace!(
-                "Sending BLE command (attempt {}/{})",
-                attempt + 1,
-                max_retries
-            );
+        // Use the command queue to handle rate limiting
+        self.command_queue
+            .execute(async move {
+                // BLE can be unreliable, so we implement retries
+                let max_retries = 3;
+                let mut attempt = 0;
 
-            match self
-                .peripheral
-                .write(
-                    &self.write_characteristic,
-                    command,
-                    WriteType::WithoutResponse,
-                )
-                .await
-            {
-                Ok(_) => {
-                    trace!("Command sent successfully");
-                    return Ok(());
-                }
-                Err(e) => {
-                    attempt += 1;
-                    warn!(
-                        "Command failed (attempt {}/{}): {}",
-                        attempt, max_retries, e
+                // Determine write type - prefer WriteWithResponse when supported
+                let write_type = if write_characteristic
+                    .properties
+                    .contains(btleplug::api::CharPropFlags::WRITE)
+                {
+                    WriteType::WithResponse
+                } else {
+                    WriteType::WithoutResponse
+                };
+
+                while attempt < max_retries {
+                    trace!(
+                        "Sending BLE command (attempt {}/{})",
+                        attempt + 1,
+                        max_retries
                     );
 
-                    if attempt < max_retries {
-                        // Wait a bit before retrying
-                        trace!("Waiting before retry...");
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    } else {
-                        // Log the last error
-                        error!("Command failed permanently: {}", e);
-                        return Err(Error::BleError(e.to_string()));
+                    match peripheral
+                        .write(&write_characteristic, &cmd, write_type)
+                        .await
+                    {
+                        Ok(_) => {
+                            trace!("Command sent successfully");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            attempt += 1;
+                            warn!(
+                                "Command failed (attempt {}/{}): {}",
+                                attempt, max_retries, e
+                            );
+
+                            if attempt < max_retries {
+                                // Wait a bit before retrying
+                                trace!("Waiting before retry...");
+                                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            } else {
+                                // Log the last error
+                                error!("Command failed permanently: {}", e);
+                                return Err(Error::BleError(e.to_string()));
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        // Should never get here, but just in case
-        error!("Command failed after {} attempts", max_retries);
-        Err(Error::CommandTimeout(max_retries))
+                // Should never get here, but just in case
+                error!("Command failed after {} attempts", max_retries);
+                Err(Error::CommandTimeout(max_retries))
+            })
+            .await
     }
 }
