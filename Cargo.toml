@@ -1,11 +1,30 @@
 [package]
-name = "blte_test"
+name = "elk-led-controller"
 version = "0.1.0"
-authors = ["TheSylex"]
-edition = "2018"
+authors = ["TheSylex", "biscoito <me@biscoito.eu>"]
+edition = "2021"
+description = "A Rust library for controlling ELK-BLEDOM and similar Bluetooth LED strips"
+repository = "https://github.com/b1scoito/elk-led-controller"
+license = "MIT"
+keywords = ["bluetooth", "led", "iot", "lighting", "elk"]
+categories = ["hardware-support", "api-bindings"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "elk_led_controller"
+path = "src/lib.rs"
+
+[[bin]]
+name = "elk-led-control"
+path = "src/main.rs"
 
 [dependencies]
-btleplug = "0.5.4"
-chrono = "0.4.19"
+btleplug = "0.11.7"
+chrono = "0.4.40"
+clap = { version = "4.5.32", features = ["derive"] }
+color-eyre = "0.6.3"
+futures = "0.3.31"
+thiserror = "2.0.12"
+tokio = { version = "1.44.1", features = ["rt", "macros", "rt-multi-thread"] }
+tracing = { version = "0.1.41", features = ["attributes"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+uuid = "1.16.0"
