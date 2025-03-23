@@ -1056,7 +1056,7 @@ impl AudioMonitor {
         let config = self.config.read();
 
         // Create detailed log entry with audio characteristics
-        let log_entry = match config.mode {
+        match config.mode {
             VisualizationMode::FrequencyColor => {
                 info!(
                     "Audio viz [FrequencyColor] - RGB({}, {}, {}) - Bass: {:.2}, Mid: {:.2}, High: {:.2}, Brightness: {}%",

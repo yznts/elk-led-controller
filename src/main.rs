@@ -1,10 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use color_eyre::eyre::Result;
 use elk_led_controller::*;
-use std::io::{self, Write};
 use tokio::time::Duration;
 use tracing::{debug, error, info, instrument, trace, warn};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -218,19 +216,17 @@ enum Commands {
 #[instrument]
 async fn main() -> Result<()> {
     // Initialize tracing with pretty colors
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("RUST_LOG")
-                .unwrap_or_else(|_| EnvFilter::new("elk_led_controller=info")),
-        )
-        .compact()
-        .init();
+    tracing_subscriber::fmt().compact().init();
 
     // Initialize color-eyre for pretty error reporting
     color_eyre::install()?;
 
     let cli = Cli::parse();
     debug!("Parsed command line arguments");
+
+    // The info! macro doesn't work in main until after tracing_subscriber::fmt().init()
+    // has been called, so it's safe to use it here
+    info!("Starting LED controller");
 
     // Initialize the device but don't automatically power it on
     let mut device = match BleLedDevice::new_without_power().await {
@@ -246,44 +242,71 @@ async fn main() -> Result<()> {
             run_demo(&mut device, duration).await?;
         }
         Commands::On => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+                info!("Device powered on");
+            }
         }
         Commands::Off => {
-            device.power_off().await?;
-            info!("sexo");
+            if device.is_on {
+                device.power_off().await?;
+                info!("Device powered off");
+            }
         }
         Commands::Red => {
-            // First ensure device is on, then set color
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color(255, 0, 0).await?;
+            info!("Color set to RED");
         }
         Commands::Green => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color(0, 255, 0).await?;
+            info!("Color set to GREEN");
         }
         Commands::Blue => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color(0, 0, 255).await?;
+            info!("Color set to BLUE");
         }
         Commands::White => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color(255, 255, 255).await?;
+            info!("Color set to WHITE");
         }
         Commands::Brightness { level } => {
             // We need to ensure the device is on for brightness changes to be visible
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_brightness(level).await?;
+            info!("Brightness set to {}", level);
         }
         Commands::ColorTemp { kelvin } => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color_temp_kelvin(kelvin).await?;
+            info!("Color temperature set to {}K", kelvin);
         }
         Commands::Color { red, green, blue } => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
             device.set_color(red, green, blue).await?;
+            info!("Color set to RGB({}, {}, {})", red, green, blue);
         }
         Commands::Effect { effect_type, speed } => {
-            device.power_on().await?;
+            if !device.is_on {
+                device.power_on().await?;
+            }
 
             let effect_code = match effect_type {
                 EffectType::Rainbow => EFFECTS.crossfade_red_green_blue_yellow_cyan_magenta_white,
@@ -299,25 +322,39 @@ async fn main() -> Result<()> {
                 EffectType::BlinkBlue => EFFECTS.blink_blue,
             };
 
-            debug!("Using effect code: {:#04x}", effect_code);
             device.set_effect(effect_code).await?;
             device.set_effect_speed(speed).await?;
+            info!("Effect set to {} with speed {}", effect_type, speed);
         }
         Commands::ScheduleOn { hour, minute, days } => {
+            if !device.is_on {
+                device.power_on().await?;
+            }
+
             let days_value = parse_days(&days);
-            debug!("Days value: {:#04x}", days_value);
 
             device
                 .set_schedule_on(days_value, hour, minute, true)
                 .await?;
+            info!(
+                "Schedule set to turn on at {:02}:{:02} on {}",
+                hour, minute, days
+            );
         }
         Commands::ScheduleOff { hour, minute, days } => {
+            if !device.is_on {
+                device.power_on().await?;
+            }
+
             let days_value = parse_days(&days);
-            debug!("Days value: {:#04x}", days_value);
 
             device
                 .set_schedule_off(days_value, hour, minute, true)
                 .await?;
+            info!(
+                "Schedule set to turn off at {:02}:{:02} on {}",
+                hour, minute, days
+            );
         }
         Commands::Audio {
             mode,
@@ -327,6 +364,10 @@ async fn main() -> Result<()> {
             test,
             device: audio_device,
         } => {
+            if !device.is_on {
+                device.power_on().await?;
+            }
+
             run_audio_visualization(
                 &mut device,
                 mode,
@@ -340,6 +381,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    info!("Command completed successfully");
     Ok(())
 }
 
@@ -413,72 +455,20 @@ async fn run_audio_visualization(
 
     audio_monitor.set_config(config);
 
-    if test {
-        // Run in test mode - just show audio levels without controlling LEDs
-        info!("Running in TEST mode. Press Ctrl+C to exit.");
-        audio_monitor.set_active(true);
+    // Normal mode - control LEDs with audio
+    info!("Starting audio visualization. Press Ctrl+C to exit.");
 
-        // Ensure device is on, but with a neutral setting
-        device.power_on().await?;
-        device.set_color(255, 255, 255).await?; // White
-
-        // Create a simple ASCII visualization of audio levels
-        let mut stdout = io::stdout();
-        loop {
-            // (Config may change, but we don't need to check it here)
-
-            // Display ASCII meters for audio energy
-            print!("\r"); // Move cursor to start of line
-
-            let bass_energy = audio_monitor.get_energy(FrequencyRange::Bass);
-            let mid_energy = audio_monitor.get_energy(FrequencyRange::Mid);
-            let high_energy = audio_monitor.get_energy(FrequencyRange::High);
-
-            // Create meter bars
-            let bass_bar = "█".repeat((bass_energy * 30.0) as usize);
-            let mid_bar = "█".repeat((mid_energy * 30.0) as usize);
-            let high_bar = "█".repeat((high_energy * 30.0) as usize);
-
-            // Get BPM estimate and show it when in BpmSync mode
-            let mode_str = match mode {
-                AudioModeType::BpmSync => {
-                    let bpm = audio_monitor.get_estimated_bpm();
-                    format!(" | BPM Mode: {:.1} BPM", bpm)
-                }
-                _ => String::new(),
-            };
-
-            print!(
-                "Bass: {:30} | Mid: {:30} | High: {:30}{}",
-                bass_bar, mid_bar, high_bar, mode_str
-            );
-            stdout.flush().unwrap();
-
-            // Check for Ctrl+C
-            if tokio::signal::ctrl_c().await.is_ok() {
-                println!("\nExiting test mode");
-                break;
+    // Start monitoring with LED control
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::select! {
+        result = audio_monitor.start_continuous_monitoring(device) => {
+            if let Err(e) = result {
+                error!("Audio monitoring error: {}", e);
+                return Err(e.into());
             }
-
-            // Small delay
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    } else {
-        // Normal mode - control LEDs with audio
-        info!("Starting audio visualization. Press Ctrl+C to exit.");
-
-        // Start monitoring with LED control
-        let ctrl_c = tokio::signal::ctrl_c();
-        tokio::select! {
-            result = audio_monitor.start_continuous_monitoring(device) => {
-                if let Err(e) = result {
-                    error!("Audio monitoring error: {}", e);
-                    return Err(e.into());
-                }
-            }
-            _ = ctrl_c => {
-                info!("Received Ctrl+C, stopping audio visualization");
-            }
+        _ = ctrl_c => {
+            info!("Received Ctrl+C, stopping audio visualization");
         }
     }
 
@@ -490,15 +480,11 @@ async fn run_audio_visualization(
     Ok(())
 }
 
+/// TODO: Convert this to test
 /// Run a demonstration of various LED strip features
 #[instrument(skip(device))]
 async fn run_demo(device: &mut BleLedDevice, duration: u64) -> Result<()> {
     info!("Running LED strip demo with {}s intervals", duration);
-
-    // Power off the leds
-    info!("Turning LEDs off");
-    device.power_off().await?;
-    sleep(duration).await;
 
     // Power on the leds
     info!("Turning LEDs on");

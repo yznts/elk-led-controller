@@ -333,7 +333,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
-                command_delay: 200, // 200 seems to be the lowest value supported
+                command_delay: 15, // 15 seems to be the lowest value supported
             },
             DeviceType::LedBle => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000ffe1-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -342,7 +342,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
-                command_delay: 200,
+                command_delay: 15,
             },
             DeviceType::Melk => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000fff3-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -351,7 +351,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
-                command_delay: 200,
+                command_delay: 15,
             },
             DeviceType::ElkBulb | DeviceType::ElkLampl | DeviceType::Unknown => DeviceConfig {
                 write_uuid: Uuid::parse_str("0000fff3-0000-1000-8000-00805f9b34fb").unwrap(),
@@ -360,7 +360,7 @@ impl BleLedDevice {
                 turn_off_cmd: [0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0x00, 0xef],
                 min_color_temp_k: 2700,
                 max_color_temp_k: 6500,
-                command_delay: 200,
+                command_delay: 15,
             },
         }
     }
@@ -456,6 +456,8 @@ impl BleLedDevice {
         self.send_command(&self.config.turn_on_cmd).await?;
         self.is_on = true;
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("LED strip powered on");
         Ok(())
     }
@@ -467,6 +469,8 @@ impl BleLedDevice {
         self.send_command(&self.config.turn_off_cmd).await?;
         self.is_on = false;
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("LED strip powered off");
         Ok(())
     }
@@ -496,6 +500,8 @@ impl BleLedDevice {
             // Send a pre-command to disable effects mode
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
+            // Add a small delay after disabling effect
+            time::sleep(Duration::from_millis(200)).await;
         }
 
         // Now set the RGB color
@@ -517,6 +523,8 @@ impl BleLedDevice {
         self.rgb_color = (red_value, green_value, blue_value);
         self.effect = None; // Setting a static color disables any active effect
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!(
             "Color set to RGB({}, {}, {})",
             red_value, green_value, blue_value
@@ -574,6 +582,8 @@ impl BleLedDevice {
 
         self.effect = Some(value);
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("Effect mode set successfully");
         Ok(())
     }
@@ -614,6 +624,8 @@ impl BleLedDevice {
 
         self.effect_speed = Some(limited_value);
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("Effect speed set to {}", limited_value);
         Ok(())
     }
@@ -654,6 +666,8 @@ impl BleLedDevice {
             // Send a pre-command to disable effects mode
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
+            // Add a small delay after disabling effect
+            time::sleep(Duration::from_millis(200)).await;
         }
 
         // Now set the color temperature
@@ -668,6 +682,8 @@ impl BleLedDevice {
         self.color_temp_kelvin = Some(temp);
         self.effect = None; // Setting color temp disables any active effect
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("Color temperature set to {}K", temp);
         Ok(())
     }
@@ -700,6 +716,8 @@ impl BleLedDevice {
         self.send_command(&[0x7e, 0x00, 0x82, hours, minutes, 0x00, 0x00, value, 0xef])
             .await?;
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("Schedule set to turn on at {}:{:02}", hours, minutes);
         Ok(())
     }
@@ -732,6 +750,8 @@ impl BleLedDevice {
         self.send_command(&[0x7e, 0x00, 0x82, hours, minutes, 0x00, 0x01, value, 0xef])
             .await?;
 
+        // Add a small delay to ensure the command has been processed
+        time::sleep(Duration::from_millis(200)).await;
         info!("Schedule set to turn off at {}:{:02}", hours, minutes);
         Ok(())
     }
@@ -776,6 +796,7 @@ impl BleLedDevice {
         // Use the command queue to handle rate limiting
         self.command_queue
             .execute(async move {
+                // TODO: Fix this as delay is not working
                 // BLE can be unreliable, so we implement retries
                 let max_retries = 3;
                 let mut attempt = 0;
