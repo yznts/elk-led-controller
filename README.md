@@ -14,6 +14,7 @@ A Rust library for controlling ELK-BLEDOM and similar Bluetooth LED strips. Work
 * Various effect modes (fade, jump, blink)
 * Effect speed control
 * Schedule on/off functionality
+* Audio-reactive lighting visualization
 * Support for multiple compatible device types
 
 ## Installation
@@ -89,6 +90,24 @@ elk-led-control schedule-on -h 8 -m 30 -d weekdays
 
 # Schedule to turn off at 11:45 PM on weekdays
 elk-led-control schedule-off -h 23 -m 45 -d weekdays
+
+# Start audio visualization with default settings (system audio reacts to LEDs)
+elk-led-control audio
+
+# Audio visualization with specific mode and settings
+elk-led-control audio -m SpectralFlow -r Full -s 80 -u 30
+
+# Use enhanced color mapping (warm colors for bass, cool/white for highs)
+elk-led-control audio -m EnhancedFrequencyColor -s 85
+
+# Use BPM sync mode for rhythm-synchronized effects
+elk-led-control audio -m BpmSync -s 90
+
+# Run in test mode to see audio levels without controlling LEDs
+elk-led-control audio -t -m BpmSync
+
+# Use with specific audio device
+elk-led-control audio -d "M4" -m EnhancedFrequencyColor
 ```
 
 For development, you can also use cargo run:
@@ -204,6 +223,47 @@ WEEK_DAYS.all           // All days
 WEEK_DAYS.week_days     // Monday-Friday
 WEEK_DAYS.weekend_days  // Saturday-Sunday
 WEEK_DAYS.none          // No days
+```
+
+### Audio-reactive Lighting
+
+The library includes audio-reactive lighting capabilities that can turn your LED strip into a music visualizer:
+
+```rust
+use elk_led_controller::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    // Initialize device
+    let mut device = BleLedDevice::new().await?;
+    
+    // Create an audio monitor
+    let audio_monitor = AudioMonitor::new()?;
+    
+    // Configure audio visualization
+    let mut config = audio_monitor.get_config();
+    config.mode = VisualizationMode::FrequencyColor; // Map frequencies to RGB
+    config.sensitivity = 0.7; // 70% sensitivity
+    audio_monitor.set_config(config);
+    
+    // Start continuous audio monitoring with LED control
+    // (This will run until the program is interrupted)
+    audio_monitor.start_continuous_monitoring(&mut device).await?;
+    
+    Ok(())
+}
+```
+
+### Available Visualization Modes
+
+```rust
+// Six different visualization modes are available:
+VisualizationMode::FrequencyColor  // Maps frequencies to colors (bass=red, mid=green, high=blue)
+VisualizationMode::EnergyBrightness // Uses sound energy to control brightness
+VisualizationMode::BeatEffects // Detects beats to trigger different effects
+VisualizationMode::SpectralFlow // Creates flowing color patterns based on audio characteristics
+VisualizationMode::EnhancedFrequencyColor // More color-accurate mapping (warm colors for bass, cool/white for highs)
+VisualizationMode::BpmSync // Synchronizes effects with detected beats per minute (BPM)
 ```
 
 ## License

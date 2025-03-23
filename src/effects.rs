@@ -1,6 +1,6 @@
-/*! 
+/*!
  # Effect modes for LED strips
- 
+
  This module defines various effect modes available for the LED strips.
  It includes constants for different effects like jump, crossfade, and blink.
 */

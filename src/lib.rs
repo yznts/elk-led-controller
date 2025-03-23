@@ -13,6 +13,7 @@
  * Effect modes (fade, jump, blink)
  * Effect speed control
  * Scheduling
+ * Audio monitoring and visualization
 
  ## Example
 
@@ -77,6 +78,18 @@ pub enum Error {
     #[error(transparent)]
     BtlePlugError(#[from] btleplug::Error),
 
+    /// Audio capture error
+    #[error("Audio capture error: {0}")]
+    AudioCaptureError(String),
+    
+    /// CPAL Stream build error
+    #[error("Audio stream build error: {0}")]
+    StreamBuildError(String),
+    
+    /// CPAL Stream play error
+    #[error("Audio stream play error: {0}")]
+    StreamPlayError(String),
+
     /// Other errors
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -89,6 +102,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod device;
 pub mod effects;
 pub mod schedule;
+pub mod audio;
 
 // Re-export key types
 pub use device::{BleLedDevice, Days, DeviceConfig, DeviceType, Effects, EFFECTS, WEEK_DAYS};
+pub use audio::{AudioMonitor, AudioVisualization, FrequencyRange, VisualizationMode};
