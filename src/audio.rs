@@ -112,6 +112,8 @@ struct AudioAnalyzer {
     energy_history: [VecDeque<f32>; 3],
     /// Beat detection hit count for confidence measurement
     beat_count: [usize; 3],
+    /// Reusable buffer for FFT samples
+    sample_buffer: Vec<f32>,
 }
 
 impl AudioAnalyzer {
@@ -138,6 +140,7 @@ impl AudioAnalyzer {
                 VecDeque::with_capacity(20),
             ],
             beat_count: [0; 3],
+            sample_buffer: Vec::with_capacity(sample_size),
         }
     }
 
@@ -156,17 +159,13 @@ impl AudioAnalyzer {
             return;
         }
 
-        // Convert samples queue to vector for FFT
-        let samples: Vec<f32> = self
-            .samples
-            .iter()
-            .copied()
-            .take(self.sample_size)
-            .collect();
+        // Fill reusable buffer with samples for FFT
+        self.sample_buffer.clear();
+        self.sample_buffer.extend(self.samples.iter().copied());
 
         // Perform FFT analysis
         match samples_fft_to_spectrum(
-            &samples,
+            &self.sample_buffer,
             self.sample_rate as u32,
             FrequencyLimit::Range(20.0, 20000.0),
             None, // No scaling function
