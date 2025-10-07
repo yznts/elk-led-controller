@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux targets
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: elk-led-controller-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: elk-led-controller-linux-aarch64
+          
+          # macOS targets
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: elk-led-controller-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: elk-led-controller-macos-aarch64
+          
+          # Windows targets
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: elk-led-controller-windows-x86_64
+            extension: .exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libudev-dev
+
+      - name: Build binaries
+        run: cargo build --release --target ${{ matrix.target }} --bins
+
+      - name: Create release directory
+        shell: bash
+        run: mkdir -p release
+
+      - name: Copy binaries (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/elkc release/elkc${{ matrix.extension }}
+          cp target/${{ matrix.target }}/release/elkd release/elkd${{ matrix.extension }}
+
+      - name: Copy binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/elkc.exe release/elkc.exe
+          cp target/${{ matrix.target }}/release/elkd.exe release/elkd.exe
+
+      - name: Create archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd release
+          tar -czf ../${{ matrix.artifact_name }}.tar.gz elkc elkd
+          cd ..
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd release
+          7z a ../${{ matrix.artifact_name }}.zip elkc.exe elkd.exe
+          cd ..
+
+      - name: Upload binaries to release (Unix)
+        if: runner.os != 'Windows'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact_name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binaries to release (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  checksums:
+    name: Generate checksums
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate checksums
+        run: |
+          find . -name "*.tar.gz" -o -name "*.zip" | xargs sha256sum > checksums.txt
+
+      - name: Upload checksums
+        uses: softprops/action-gh-release@v1
+        with:
+          files: checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

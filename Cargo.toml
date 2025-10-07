@@ -14,8 +14,12 @@ name = "elk_led_controller"
 path = "src/lib.rs"
 
 [[bin]]
-name = "elk-led-control"
-path = "src/main.rs"
+name = "elkc"
+path = "src/bin/elkc.rs"
+
+[[bin]]
+name = "elkd"
+path = "src/bin/elkd.rs"
 
 [dependencies]
 btleplug = "0.11.7"

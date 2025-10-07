@@ -143,6 +143,8 @@ pub struct BleLedDevice {
     pub effect_speed: Option<u8>,
     /// Current color temperature in Kelvin if using white mode
     pub color_temp_kelvin: Option<u32>,
+    /// Delay configuration for command processing (in milliseconds)
+    pub command_delay: u64,
 }
 
 impl BleLedDevice {
@@ -301,6 +303,176 @@ impl BleLedDevice {
                 effect: None,
                 effect_speed: None,
                 color_temp_kelvin: Some(5000),
+                command_delay: 200,
+            };
+
+            // Sync time for devices that support it
+            if device_type == DeviceType::ElkBle
+                || device_type == DeviceType::ElkBulb
+                || device_type == DeviceType::ElkLampl
+            {
+                debug!("Synchronizing device time");
+                device.sync_time().await?;
+            }
+
+            info!(
+                "Successfully connected to {} device (without powering on)",
+                device.get_device_type_name()
+            );
+            Ok(device)
+        } else {
+            error!("No compatible LED device found");
+            Err(Error::NoCompatibleDevice)
+        }
+    }
+
+    /// Creates a new instance by scanning for and connecting to a LED strip with a specific MAC address or ID
+    /// without automatically powering it on
+    #[instrument]
+    pub async fn new_with_addr(addr: &str) -> Result<BleLedDevice> {
+        info!("Initializing BLE LED controller");
+        let manager = Manager::new().await?;
+        let central = get_central(&manager).await?;
+
+        info!("Scanning for compatible BLE devices...");
+        central.start_scan(ScanFilter::default()).await?;
+
+        // Maximum time to wait for device discovery (10 seconds)
+        let max_discovery_time = Duration::from_secs(10);
+        let start_time = std::time::Instant::now();
+        let mut found_device = false;
+        let mut device: Option<(Peripheral, DeviceType)> = None;
+
+        // Poll for devices until we find a compatible one or timeout
+        while start_time.elapsed() < max_discovery_time && !found_device {
+            // Poll for new devices
+            let peripherals = central.peripherals().await?;
+            debug!("Found {} BLE peripherals so far", peripherals.len());
+
+            if !peripherals.is_empty() {
+                info!(
+                    "Checking {} BLE devices for compatibility...",
+                    peripherals.len()
+                );
+
+                // Check each peripheral
+                for p in peripherals {
+                    if let Ok(Some(props)) = p.properties().await {
+                        if let Some(name) = props.local_name {
+                            println!("Found device: {} {}", p.id().to_string().to_lowercase(), name);
+                            // Skip if the address does not match
+                            if p.address().to_string().to_lowercase() != addr.to_lowercase()
+                                && p.id().to_string().to_lowercase() != addr.to_lowercase()
+                            {
+                                continue;
+                            }
+
+                            debug!("Found device: {}", name);
+                            let device_type = if name.starts_with("ELK-BLE") {
+                                DeviceType::ElkBle
+                            } else if name.starts_with("LEDBLE") {
+                                DeviceType::LedBle
+                            } else if name.starts_with("MELK") {
+                                DeviceType::Melk
+                            } else if name.starts_with("ELK-BULB") {
+                                DeviceType::ElkBulb
+                            } else if name.starts_with("ELK-LAMPL") {
+                                DeviceType::ElkLampl
+                            } else {
+                                DeviceType::Unknown
+                            };
+
+                            if device_type == DeviceType::Unknown {
+                                error!(
+                                    "Device with a given address {} is not compatible: {}",
+                                    addr, name,
+                                );
+                            }
+
+                            device = Some((p, device_type));
+                            found_device = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !found_device {
+                // Report scanning progress
+                let elapsed = start_time.elapsed().as_secs();
+                let remaining = max_discovery_time.as_secs() - elapsed;
+                info!(
+                    "Still scanning for a device... ({} seconds remaining)",
+                    remaining
+                );
+                // Wait a moment before polling again
+                time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+
+        // If we've timed out without finding a device, report and error
+        if !found_device {
+            central.stop_scan().await?;
+            error!(
+                "No compatible LED device found within {} seconds",
+                max_discovery_time.as_secs()
+            );
+            return Err(Error::NoCompatibleDevice);
+        }
+
+        if let Some((peripheral, device_type)) = device {
+            // Connection and fetching of characteristics
+            info!("Connecting to device...");
+            if !peripheral.is_connected().await? {
+                peripheral.connect().await?;
+            }
+
+            central.stop_scan().await?;
+            debug!("Discovering services...");
+            peripheral.discover_services().await?;
+
+            // Get configuration for this device type
+            let config = Self::get_device_config(device_type);
+            debug!("Using config for device type: {:?}", device_type);
+
+            // Create command queue with device-specific delay
+            let command_queue = Arc::new(CommandQueue::new(config.command_delay));
+
+            // Find write characteristic
+            let write_char = peripheral
+                .characteristics()
+                .into_iter()
+                .find(|c| c.uuid == config.write_uuid)
+                .ok_or(Error::CharacteristicNotFound(config.write_uuid.to_string()))?;
+
+            debug!("Found write characteristic: {}", write_char.uuid);
+
+            // Find read characteristic (may not be needed for all devices)
+            let read_char = peripheral
+                .characteristics()
+                .into_iter()
+                .find(|c| c.uuid == config.read_uuid);
+
+            if let Some(ref char) = read_char {
+                debug!("Found read characteristic: {}", char.uuid);
+            } else {
+                debug!("Read characteristic not found, but this is optional");
+            }
+
+            let device = BleLedDevice {
+                peripheral,
+                write_characteristic: write_char,
+                read_characteristic: read_char,
+                device_type,
+                config,
+                command_queue,
+                is_on: false,
+                rgb_color: (255, 255, 255),
+                brightness: 100,
+                effect: None,
+                effect_speed: None,
+                color_temp_kelvin: Some(5000),
+                command_delay: 200,
             };
 
             // Sync time for devices that support it
@@ -457,7 +629,7 @@ impl BleLedDevice {
         self.is_on = true;
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("LED strip powered on");
         Ok(())
     }
@@ -470,7 +642,7 @@ impl BleLedDevice {
         self.is_on = false;
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("LED strip powered off");
         Ok(())
     }
@@ -501,7 +673,7 @@ impl BleLedDevice {
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
             // Add a small delay after disabling effect
-            time::sleep(Duration::from_millis(200)).await;
+            time::sleep(Duration::from_millis(self.command_delay)).await;
         }
 
         // Now set the RGB color
@@ -524,7 +696,7 @@ impl BleLedDevice {
         self.effect = None; // Setting a static color disables any active effect
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!(
             "Color set to RGB({}, {}, {})",
             red_value, green_value, blue_value
@@ -583,7 +755,7 @@ impl BleLedDevice {
         self.effect = Some(value);
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("Effect mode set successfully");
         Ok(())
     }
@@ -625,7 +797,7 @@ impl BleLedDevice {
         self.effect_speed = Some(limited_value);
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("Effect speed set to {}", limited_value);
         Ok(())
     }
@@ -667,7 +839,7 @@ impl BleLedDevice {
             self.send_command(&[0x7e, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xef])
                 .await?;
             // Add a small delay after disabling effect
-            time::sleep(Duration::from_millis(200)).await;
+            time::sleep(Duration::from_millis(self.command_delay)).await;
         }
 
         // Now set the color temperature
@@ -683,7 +855,7 @@ impl BleLedDevice {
         self.effect = None; // Setting color temp disables any active effect
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("Color temperature set to {}K", temp);
         Ok(())
     }
@@ -717,7 +889,7 @@ impl BleLedDevice {
             .await?;
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("Schedule set to turn on at {}:{:02}", hours, minutes);
         Ok(())
     }
@@ -751,7 +923,7 @@ impl BleLedDevice {
             .await?;
 
         // Add a small delay to ensure the command has been processed
-        time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(self.command_delay)).await;
         info!("Schedule set to turn off at {}:{:02}", hours, minutes);
         Ok(())
     }
