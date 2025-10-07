@@ -1,6 +1,6 @@
 [package]
 name = "elk-led-controller"
-version = "0.1.0"
+version = "0.1.6"
 authors = ["TheSylex", "biscoito <me@biscoito.eu>"]
 edition = "2021"
 description = "A Rust library for controlling ELK-BLEDOM and similar Bluetooth LED strips"
