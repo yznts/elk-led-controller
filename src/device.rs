@@ -359,7 +359,7 @@ impl BleLedDevice {
                 for p in peripherals {
                     if let Ok(Some(props)) = p.properties().await {
                         if let Some(name) = props.local_name {
-                            println!("Found device: {} {}", p.id().to_string().to_lowercase(), name);
+                            debug!("Found device: {} {}", p.id().to_string().to_lowercase(), name);
                             // Skip if the address does not match
                             if p.address().to_string().to_lowercase() != addr.to_lowercase()
                                 && p.id().to_string().to_lowercase() != addr.to_lowercase()
